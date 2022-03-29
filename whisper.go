@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"os"
 	"regexp"
 	"runtime/debug"
@@ -122,6 +123,9 @@ type Options struct {
 	SIMV bool // single interval multiple values
 
 	IgnoreNowOnWrite bool
+
+	DelayedPropagationSeconds int64
+	DelayedAt                 int64
 }
 
 type MixAggregationSpec struct {
@@ -166,6 +170,8 @@ type Whisper struct {
 
 	// TODO: improve
 	NonFatalErrors []error
+
+	PropagatedAt int64
 }
 
 /*
@@ -946,6 +952,8 @@ func (whisper *Whisper) UpdateManyForArchive(points []*TimeSeriesPoint, targetRe
 	return
 }
 
+var wrand = rand.New(rand.NewSource(time.Unix().Now()))
+
 func (whisper *Whisper) archiveUpdateMany(archive *archiveInfo, points []*TimeSeriesPoint) error {
 	alignedPoints := alignPoints(archive, points)
 	return whisper.archiveUpdateManyDataPoints(archive, alignedPoints, true)
@@ -987,6 +995,19 @@ func (whisper *Whisper) archiveUpdateManyDataPoints(archive *archiveInfo, aligne
 
 	higher := archive
 	lowerArchives := whisper.lowerArchives(archive)
+
+	// TODO: make sure it handle backfilling gracefully
+	if whisper.opts.DelayedPropagationSeconds > 0 && whisper.opts.DelayedAt > 0 {
+		jitteredDelay := whisper.opts.DelayedPropagationSeconds/2 + wrand.Int63n(whisper.opts.DelayedPropagationSeconds/2)
+		delayedDuration := Now().Unix() - whisper.opts.DelayedAt
+		if delayedDuration > 0 && delayedDuration > jitteredDelay {
+			whisper.Repropagate(whisper.opts.DelayedAt)
+		} else {
+			whisper.PropagationDelayed = true
+		}
+
+		return nil
+	}
 
 	for _, lower := range lowerArchives {
 		seen := make(map[int]bool)
@@ -1134,6 +1155,55 @@ func (whisper *Whisper) propagate(timestamp int, higher, lower *archiveInfo) (bo
 	}
 	return true, nil
 }
+
+// func (whisper *Whisper) Repropagate(from, until int) error {
+// 	higher := whisper.archives[0]
+
+// 	lowerIntervalStart := timestamp - mod(timestamp, lower.secondsPerPoint)
+
+// 	higherFirstOffset := whisper.getPointOffset(lowerIntervalStart, higher)
+
+// 	// TODO: extract all this series extraction stuff
+// 	higherPoints := lower.secondsPerPoint / higher.secondsPerPoint
+// 	higherSize := higherPoints * PointSize
+// 	relativeFirstOffset := higherFirstOffset - higher.Offset()
+// 	relativeLastOffset := int64(mod(int(relativeFirstOffset+int64(higherSize)), higher.Size()))
+// 	higherLastOffset := relativeLastOffset + higher.Offset()
+
+// 	series, err := whisper.readSeries(higherFirstOffset, higherLastOffset, higher)
+// 	if err != nil {
+// 		return false, err
+// 	}
+
+// 	// and finally we construct a list of values
+// 	knownValues := make([]float64, 0, len(series))
+// 	currentInterval := lowerIntervalStart
+
+// 	for _, dPoint := range series {
+// 		if dPoint.interval == currentInterval {
+// 			knownValues = append(knownValues, dPoint.value)
+// 		}
+// 		currentInterval += higher.secondsPerPoint
+// 	}
+
+// 	// propagate aggregateValue to propagate from neighborValues if we have enough known points
+// 	if len(knownValues) == 0 {
+// 		return false, nil
+// 	}
+
+// 	knownPercent := float32(len(knownValues)) / float32(len(series))
+// 	if knownPercent < whisper.xFilesFactor { // check we have enough data points to propagate a value
+// 		return false, nil
+// 	} else {
+// 		aggregateValue := aggregate(whisper.aggregationMethod, knownValues)
+// 		point := dataPoint{lowerIntervalStart, aggregateValue}
+// 		if _, err := whisper.file.WriteAt(point.Bytes(), whisper.getPointOffset(lowerIntervalStart, lower)); err != nil {
+// 			return false, err
+// 		}
+// 	}
+
+// 	return true, nil
+// }
 
 func (whisper *Whisper) readSeries(start, end int64, archive *archiveInfo) ([]dataPoint, error) {
 	var b []byte
@@ -1308,6 +1378,18 @@ func (whisper *Whisper) fetchFromArchive(archive *archiveInfo, fromTime, untilTi
 			return nil, err
 		}
 
+		if harchive := whisper.archives[0]; harchive != archive &&
+			fromOffset <= whisper.opts.DelayedAt &&
+			whisper.opts.DelayedAt <= untilOffset {
+			// TODO: backfill data from the first/highest archive
+			hfrom := harchive.PointOffset(whisper.opts.DelayedAt)
+			huntil := harchive.PointOffset(untilOffset)
+			hseries, err = whisper.readSeries(hfrom, huntil, harchive)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		values := make([]float64, len(series))
 		for i := range values {
 			values[i] = math.NaN()
@@ -1321,6 +1403,7 @@ func (whisper *Whisper) fetchFromArchive(archive *archiveInfo, fromTime, untilTi
 			}
 			currentInterval += step
 		}
+
 		return &TimeSeries{fromInterval, untilInterval, step, values}, nil
 	}
 }
