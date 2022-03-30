@@ -1252,6 +1252,10 @@ func (whisper *Whisper) FetchByAggregation(fromTime, untilTime int, spec *MixAgg
 		return nil, fmt.Errorf("target aggregation %s not found", spec)
 	}
 
+	return whisper.fetchFromArchive(archive, fromTime, untilTime)
+}
+
+func (whisper *Whisper) fetchFromArchive(archive *archiveInfo, fromTime, untilTime int) (timeSeries *TimeSeries, err error) {
 	fromInterval := archive.Interval(fromTime)
 	untilInterval := archive.Interval(untilTime)
 
@@ -1866,18 +1870,11 @@ func (dstw *Whisper) retrieveAndMerge(srcw *Whisper) (pointsByArchives [][]dataP
 	//     src: 1m:30d,1h:10y
 	//     dst: 1s:4d,1m:20d,1h:20y
 
-	const fromBuffer = 5
-
 	pointsByArchives = make([][]dataPoint, len(dstw.archives))
 	for i, dstArc := range dstw.archives {
 		// TODO: fix needed. should limit from/until to the smaller retentions, in src or in dst.
 		until := int(Now().Unix())
 		from := until - dstArc.MaxRetention()
-
-		// ignore the last data point to avoid going into the lower archives
-		if dstArc.Retention.secondsPerPoint <= fromBuffer {
-			from += dstArc.SecondsPerPoint()
-		}
 
 		var srcArc *archiveInfo
 		srcPoints := &TimeSeries{}
@@ -1890,10 +1887,6 @@ func (dstw *Whisper) retrieveAndMerge(srcw *Whisper) (pointsByArchives [][]dataP
 			srcUtil := until
 			if dstArc.MaxRetention() > srcArcx.MaxRetention() {
 				srcFrom = until - srcArcx.MaxRetention()
-
-				if srcArcx.Retention.secondsPerPoint <= fromBuffer {
-					srcFrom += srcArcx.SecondsPerPoint()
-				}
 			}
 
 			// TODO: more thoughts needed for mix aggregation backfilling?
@@ -1905,13 +1898,13 @@ func (dstw *Whisper) retrieveAndMerge(srcw *Whisper) (pointsByArchives [][]dataP
 			}
 
 			srcArc = srcArcx
-			srcPoints, err = srcw.FetchByAggregation(srcFrom, srcUtil, srcArcx.aggregationSpec)
+			srcPoints, err = srcw.fetchFromArchive(srcArcx, srcFrom, srcUtil)
 			if err != nil {
 				return nil, err
 			}
 		}
 
-		dstPoints, err := dstw.FetchByAggregation(from, until, dstArc.aggregationSpec)
+		dstPoints, err := dstw.fetchFromArchive(dstArc, from, until)
 		if err != nil {
 			return nil, err
 		}
