@@ -4,6 +4,7 @@
 package whisper
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -624,7 +625,7 @@ func OpenWithOptions(path string, options *Options) (whisper *Whisper, err error
 	b := make([]byte, len(compressedMagicString))
 	if _, err := whisper.file.Read(b); err != nil {
 		return nil, fmt.Errorf("Unable to read magic string: %s", err)
-	} else if string(b) == string(compressedMagicString) {
+	} else if bytes.Equal(b, compressedMagicString) {
 		whisper.compressed = true
 	} else if _, err := whisper.file.Seek(0, 0); err != nil {
 		return nil, fmt.Errorf("Unable to reset file offset: %s", err)
