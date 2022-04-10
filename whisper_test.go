@@ -1126,3 +1126,167 @@ func populateTestFile(w *Whisper, gapn int) error {
 
 	return nil
 }
+
+func TestDelayedPropagate(t *testing.T) {
+	os.Remove("delayed_propagation.wsp")
+	os.Remove("regular_propagation.wsp")
+
+	// cases:
+	// 	* full/dense
+	// 	* sparse
+	// 	* out of order
+	// 	* backfill
+
+	os.MkdirAll("tmp", 0755)
+
+	for _, input := range []struct {
+		name      string
+		randLimit func() int
+		fullTest  func() bool
+		gen       func(prevTime time.Time, index int) *TimeSeriesPoint
+
+		backfillOrOutOfOrder func(prevTime time.Time, index int) *TimeSeriesPoint
+	}{
+		{
+			name:      "dense_simple_write",
+			randLimit: func() int { return rand.Intn(300) }, // skipcq: GSC-G404
+			gen: func(prevTime time.Time, index int) *TimeSeriesPoint {
+				return &TimeSeriesPoint{Value: 0, Time: int(prevTime.Add(time.Second).Unix())}
+			},
+		},
+		{
+			name:      "sparse_simple_write",
+			randLimit: func() int { return rand.Intn(300) }, // skipcq: GSC-G404
+			gen: func(prevTime time.Time, index int) *TimeSeriesPoint {
+				return &TimeSeriesPoint{Value: 0, Time: int(prevTime.Add(time.Second * time.Duration(rand.Intn(60))).Unix())}
+			},
+		},
+		{
+			name:      "sparse_ooo_write",
+			randLimit: func() int { return rand.Intn(300) }, // skipcq: GSC-G404
+			gen: func(prevTime time.Time, index int) *TimeSeriesPoint {
+				return &TimeSeriesPoint{Value: 0, Time: int(prevTime.Add(time.Second * time.Duration(rand.Intn(60))).Unix())}
+			},
+			backfillOrOutOfOrder: func(prevTime time.Time, index int) *TimeSeriesPoint {
+				// if index >=
+				return &TimeSeriesPoint{Value: 0, Time: int(prevTime.Add(time.Second * time.Duration(rand.Intn(60))).Unix())}
+			},
+		},
+	} {
+		t.Run(input.name, func(t *testing.T) {
+			t.Logf("case: %s\n", input.name)
+
+			delayedPath := fmt.Sprintf("tmp/delayed_propagation_%s.wsp", input.name)
+			regularPath := fmt.Sprintf("tmp/regular_propagation_%s.wsp", input.name)
+			os.Remove(delayedPath)
+			os.Remove(regularPath)
+
+			// // var now = time.Unix(1589720099, 0)
+			// var now = time.Now()
+			// // var total = 60*60*24*365*2 + 37
+			// var total = 60 * 60 * 8
+			// var start = now.Add(time.Second * time.Duration(total) * -1)
+			// Now = func() time.Time { return start }
+			// defer func() { Now = func() time.Time { return time.Now() } }()
+
+			delayedWhisper, err := CreateWithOptions(delayedPath, MustParseRetentionDefs("1s:2d,1m:30d,1h:2y"), Average, 0, &Options{
+				PropagatedAt:              int(time.Now().Unix()),
+				DelayedPropagationSeconds: 7200,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			regularWhisper, err := CreateWithOptions(regularPath, MustParseRetentionDefs("1s:2d,1m:30d,1h:2y"), Average, 0, &Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			delayedWhisper.Close()
+			regularWhisper.Close()
+
+			// var now = time.Unix(1589720099, 0)
+			var now = time.Now()
+			// var total = 60*60*24*365*2 + 37
+			var total = 60 * 60 * 24 * 5
+			var start = now.Add(time.Second * time.Duration(total) * -1)
+			Now = func() time.Time { return start }
+			defer func() { Now = func() time.Time { return time.Now() } }()
+
+			var ps []*TimeSeriesPoint
+			var limit = input.randLimit()
+			var propagatedAt int
+			for i := 0; i < total; i++ {
+				p := input.gen(start, i)
+				ps = append(ps, p)
+				start = time.Unix(int64(p.Time), 0)
+
+				if input.backfillOrOutOfOrder != nil {
+					p := input.backfillOrOutOfOrder(start, i)
+					ps = append(ps, p)
+				}
+
+				if len(ps) < limit {
+					continue
+				}
+				limit = input.randLimit()
+
+				delayedWhisper, err := OpenWithOptions(delayedPath, &Options{
+					DelayedPropagationSeconds: 3600 * 3,
+					PropagatedAt:              propagatedAt,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := delayedWhisper.UpdateMany(ps); err != nil {
+					t.Fatal(err)
+				}
+				if err := delayedWhisper.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if delayedWhisper.PropagatedAt > 0 {
+					propagatedAt = delayedWhisper.PropagatedAt
+				}
+
+				regularWhisper, err := OpenWithOptions(regularPath, &Options{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := regularWhisper.UpdateMany(ps); err != nil {
+					t.Fatal(err)
+				}
+				if err := regularWhisper.Close(); err != nil {
+					t.Fatal(err)
+				}
+
+				ps = ps[:0]
+
+				if start.After(now) {
+					break
+				}
+			}
+
+			{
+				delayedWhisper, err := OpenWithOptions(delayedPath, &Options{
+					DelayedPropagationSeconds: 3600 * 3,
+					PropagatedAt:              propagatedAt,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := delayedWhisper.Repropagate(propagatedAt, int(now.Unix()), 0); err != nil {
+					t.Fatal(err)
+				}
+				if err := delayedWhisper.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			t.Log("go", "run", "cmd/compare.go", "-v", "-now", fmt.Sprintf("%d", now.Unix()), delayedPath, regularPath)
+			output, err := Compare(delayedPath, regularPath, int(now.Unix()), false, "", false, false, 2)
+			if err != nil {
+				t.Log(string(output))
+				t.Error(err)
+			}
+		})
+	}
+}

@@ -1,3 +1,4 @@
+//go:build ignore
 // +build ignore
 
 package main
@@ -21,6 +22,7 @@ func main() {
 	xFilesFactor := flag.Float64("xfiles-factor", 0.0, "xfiles factor used for creating new whisper file")
 	delimiter := flag.String("d", ",", "delimiter of data points")
 	compressed := flag.Bool("compressed", false, "use compressed format")
+	// delayedPropagation := flag.Bool("delayedPropagation", false, "delaye real time propagation")
 	randChunk := flag.Int("rand-chunk", 0, "randomize input size with limit for triggering extensions and simulating real life writes.")
 	ppb := flag.Int("ppb", whisper.DefaultPointsPerBlock, "points per block")
 	flag.Parse()

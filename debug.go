@@ -382,12 +382,13 @@ func Compare(
 
 		msg += fmt.Sprintf("  len1 = %d len2 = %d vals1 = %d vals2 = %d\n", len(dps1.Values()), len(dps2.Values()), vals1, vals2)
 
+		var badArchive bool
 		if len(dps1.Values()) != len(dps2.Values()) {
-			bad = true
+			badArchive = true
 			msg += fmt.Sprintf("  size doesn't match: %d != %d\n", len(dps1.Values()), len(dps2.Values()))
 		}
 		if vals1 != vals2 {
-			bad = true
+			badArchive = true
 			msg += fmt.Sprintf("  values doesn't match: %d != %d (%d)\n", vals1, vals2, vals1-vals2)
 		}
 		var ptDiff int
@@ -397,7 +398,7 @@ func Compare(
 			}
 			p2 := dps2.Values()[i]
 			if !((math.IsNaN(p1) && math.IsNaN(p2)) || p1 == p2) {
-				bad = true
+				badArchive = true
 				ptDiff++
 				if verbose {
 					msg += fmt.Sprintf("    %d: %d %v != %v\n", i, dps1.FromTime()+i*ret.SecondsPerPoint(), p1, p2)
@@ -406,7 +407,11 @@ func Compare(
 		}
 		msg += fmt.Sprintf("  point mismatches: %d\n", ptDiff)
 		if ptDiff <= muteThreshold && !strict {
-			bad = false
+			badArchive = false
+		}
+
+		if badArchive {
+			bad = true
 		}
 	}
 	if db1.IsCompressed() {
