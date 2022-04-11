@@ -1005,7 +1005,8 @@ func (whisper *Whisper) archiveUpdateManyDataPoints(archive *archiveInfo, aligne
 
 		if whisper.opts.PropagatedAt > 0 {
 			maxRetention := archive.MaxRetention()
-			jitteredDelay := whisper.opts.DelayedPropagationSeconds/2 + wrand.Intn(whisper.opts.DelayedPropagationSeconds/2)
+			// jitteredDelay := whisper.opts.DelayedPropagationSeconds/2 + wrand.Intn(whisper.opts.DelayedPropagationSeconds/2)
+			jitteredDelay := 600 + wrand.Intn(whisper.opts.DelayedPropagationSeconds)
 			delayedDuration := now - whisper.opts.PropagatedAt
 
 			if delayedDuration > 0 && (delayedDuration > maxRetention/2 || delayedDuration > jitteredDelay) {
